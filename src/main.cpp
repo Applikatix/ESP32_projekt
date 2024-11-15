@@ -3,6 +3,8 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 //Filsystem
 auto FS = LittleFS;
@@ -18,6 +20,7 @@ String ssid, password;
 String ip, gateway, subnet;
 
 const unsigned long wifiConnTimeout = 10000;
+const unsigned long resetConfigDelay = 10000;
 
 bool connectWiFi();
 void startWebServer();
@@ -40,7 +43,6 @@ void logTouchData(unsigned long startTime, unsigned long endTime);
 
 //Knap variabler
 const int BTN = 16;
-const unsigned long btnPressDelay = 10000;
 const unsigned long btnDebounceDelay = 50;
 
 bool btnState;
@@ -52,21 +54,39 @@ void IRAM_ATTR btnIsr() {
   btnLastDebounce = millis();
   btnChanging = true;
 }
+bool btnHeld();
 
-unsigned long lastTime = 0;
+unsigned long currentTime = 0;
+unsigned long prevTime = 0;
+
+//Display
+Adafruit_SSD1306 display(128, 32);
 
 void setup() {
   Serial.begin(115200);
 
-  //Knap setup
-  pinMode(BTN, INPUT_PULLUP);
-  btnState = digitalRead(BTN);
-  attachInterrupt(BTN, btnIsr, CHANGE);
-
+  //Filesystem
   Serial.println("Mounting File System");
   if (!FS.begin(true)){
     Serial.println("- ERROR: Failed to mount file system.");
   }
+
+  //Knap
+  pinMode(BTN, INPUT_PULLUP);
+  btnState = digitalRead(BTN);
+  attachInterrupt(BTN, btnIsr, CHANGE);
+
+  //Display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  }
+  delay(2000);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println("Initialising...");
+  display.display();
 
   Serial.println("Loading WiFi credentials and IP configuration into memory");
   loadWiFiCreds();
@@ -83,8 +103,16 @@ void setup() {
 }
 
 void loop() {
-  auto currentTime = millis();
+  if (btnHeld()) {
+    Serial.println("Reseting WiFi configuration");
+    resetWiFiConfig();
+  }
+  touchSensor();
+}
+
+bool btnHeld() {
   if (btnChanging) {
+    currentTime = millis();
     if (currentTime - btnLastDebounce > btnDebounceDelay) {
       btnChanging = false;
       btnState = digitalRead(BTN);
@@ -97,15 +125,15 @@ void loop() {
       }
     }
   } else if (!btnState) {
-    if (currentTime - btnLastPress > btnPressDelay) {
-      Serial.println("Reseting WiFi configuration");
-      resetWiFiConfig();
-    } else if (currentTime - lastTime > 1000) {
-      lastTime = currentTime;
+    currentTime = millis();
+    if (currentTime - btnLastPress > resetConfigDelay) {
+      return true;
+    } else if (currentTime - prevTime > 1000) {
+      prevTime = currentTime;
       Serial.print(".");
     }
   }
-  touchSensor();
+  return false;
 }
 
 bool connectWiFi() {
@@ -153,14 +181,23 @@ void startWebServer() {
 
   server.begin();
   Serial.println("- Server online");
+
+  display.clearDisplay();
+  display.print("Network: ");
+  display.println(ssid);
+  display.print("IP: ");
+  display.println(ip);
+  display.display();
 }
 
 void startWiFiManager() {
   WiFi.softAP(ap_ssid);
+
+  auto ap_ip = WiFi.softAPIP();
   Serial.print("- AP: ");
   Serial.println(ap_ssid);
   Serial.print("- IP: ");
-  Serial.println(WiFi.softAPIP());
+  Serial.println(ap_ip);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(FS, "/wifimanager.html", "text/html");
@@ -188,9 +225,19 @@ void startWiFiManager() {
 
   server.begin();
   Serial.println("- WiFi manager online");
+
+  display.clearDisplay();
+  display.print("AP: ");
+  display.println(ap_ssid);
+  display.print("IP: ");
+  display.println(ap_ip);
+  display.display();
 }
 
 void resetWiFiConfig() {
+  display.clearDisplay();
+  display.display();
+
   pref.begin(wifiNamespace);
   pref.clear();
   pref.end();
